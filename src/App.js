@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { auth, googleProvider, db } from "./firebase";
-import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "firebase/auth";
 import {
   collection, addDoc, deleteDoc, updateDoc,
   doc, onSnapshot, query, orderBy, serverTimestamp
@@ -38,6 +38,10 @@ function urgencyLabel(days) {
   return `${days} days left`;
 }
 
+function isMobile() {
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -61,14 +65,14 @@ export default function App() {
         scheduleDailyCheck(reg);
       }
     });
-    // Check current notification permission
     if ("Notification" in window) {
       setNotifStatus(Notification.permission);
     }
   }, []);
 
-  // Auth listener
+  // Auth listener + handle redirect result on return from Google
   useEffect(() => {
+    getRedirectResult(auth).catch(() => {});
     const unsub = onAuthStateChanged(auth, u => {
       setUser(u);
       setAuthLoading(false);
@@ -83,7 +87,6 @@ export default function App() {
     const unsub = onSnapshot(q, snap => {
       const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setItems(fetched);
-      // Keep IndexedDB in sync so service worker can read items
       syncItemsToDB(fetched);
     });
     return unsub;
@@ -107,7 +110,11 @@ export default function App() {
 
   const handleSignIn = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      if (isMobile()) {
+        await signInWithRedirect(auth, googleProvider);
+      } else {
+        await signInWithPopup(auth, googleProvider);
+      }
     } catch (e) {
       showToast("Sign-in failed. Please try again.", "error");
     }
@@ -246,7 +253,6 @@ export default function App() {
 
       <main style={S.main}>
 
-        {/* Notification permission banner */}
         {notifStatus !== "granted" && (
           <div style={S.notifBanner}>
             <div>
@@ -265,7 +271,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Add / Edit form */}
         {showForm && (
           <div style={S.formCard}>
             <h2 style={S.formTitle}>{editingId ? "✏️ Edit Item" : "📦 Log New Item"}</h2>
@@ -307,7 +312,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Filters */}
         {items.length > 0 && (
           <div style={S.controls}>
             <div style={S.filters}>
@@ -450,7 +454,6 @@ const S = {
   btnRemove: { background:"transparent", border:"none", color:"#5a7a5d", padding:"6px 8px", fontSize:14, cursor:"pointer", marginLeft:"auto" },
   confirmRow: { display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" },
   confirmText: { fontSize:13, color:"#ef9a9a", flex:1 },
-  btnDagger: { background:"rgba(244,67,54,0.2)", border:"1px solid rgba(244,67,54,0.4)", borderRadius:8, color:"#ef9a9a", padding:"6px 12px", fontSize:12, cursor:"pointer" },
   btnDanger: { background:"rgba(244,67,54,0.2)", border:"1px solid rgba(244,67,54,0.4)", borderRadius:8, color:"#ef9a9a", padding:"6px 12px", fontSize:12, cursor:"pointer" },
   btnGhost: { background:"transparent", border:"1px solid #2a3d2d", borderRadius:8, color:"#5a7a5d", padding:"6px 12px", fontSize:12, cursor:"pointer" },
   toast: { position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)", background:"#2e7d32", color:"#fff", borderRadius:10, padding:"12px 20px", fontSize:14, fontWeight:600, zIndex:999, boxShadow:"0 4px 20px rgba(0,0,0,0.4)", maxWidth:"90vw", textAlign:"center" },
