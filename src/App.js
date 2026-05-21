@@ -5,7 +5,10 @@ import {
   collection, addDoc, deleteDoc, updateDoc,
   doc, onSnapshot, query, orderBy, serverTimestamp
 } from "firebase/firestore";
-import { createCalendarReminder } from "./calendar";
+import {
+  registerSW, requestNotificationPermission,
+  scheduleDailyCheck, syncItemsToDB, sendTestNotification
+} from "./notifications";
 
 const CATEGORIES = [
   "🥩 Meat & Fish", "🥛 Dairy", "🥦 Veg & Salad",
@@ -47,8 +50,24 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [notifStatus, setNotifStatus] = useState("unknown");
+  const [swReg, setSwReg] = useState(null);
 
-  // Auth state listener
+  // Register service worker on load
+  useEffect(() => {
+    registerSW().then(reg => {
+      if (reg) {
+        setSwReg(reg);
+        scheduleDailyCheck(reg);
+      }
+    });
+    // Check current notification permission
+    if ("Notification" in window) {
+      setNotifStatus(Notification.permission);
+    }
+  }, []);
+
+  // Auth listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, u => {
       setUser(u);
@@ -57,12 +76,15 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Firestore real-time listener — shared across both users
+  // Firestore listener
   useEffect(() => {
     if (!user) return;
     const q = query(collection(db, "items"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q, snap => {
-      setItems(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setItems(fetched);
+      // Keep IndexedDB in sync so service worker can read items
+      syncItemsToDB(fetched);
     });
     return unsub;
   }, [user]);
@@ -70,6 +92,17 @@ export default function App() {
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  const handleEnableNotifications = async () => {
+    const result = await requestNotificationPermission();
+    setNotifStatus(result);
+    if (result === "granted") {
+      const ok = await sendTestNotification();
+      if (ok) showToast("🔔 Notifications enabled! You'll get a daily reminder.", "success");
+    } else if (result === "denied") {
+      showToast("Notifications blocked — enable them in your browser settings.", "error");
+    }
   };
 
   const handleSignIn = async () => {
@@ -91,53 +124,29 @@ export default function App() {
       return;
     }
     setLoading(true);
-
+    const itemData = {
+      name: form.name.trim(),
+      category: form.category,
+      expiry: form.expiry,
+      quantity: form.quantity,
+      notes: form.notes,
+      addedBy: user.displayName || user.email,
+      createdAt: serverTimestamp()
+    };
     try {
-      const itemData = {
-        name: form.name.trim(),
-        category: form.category,
-        expiry: form.expiry,
-        quantity: form.quantity,
-        notes: form.notes,
-        addedBy: user.displayName || user.email,
-        createdAt: serverTimestamp()
-      };
-
       if (editingId) {
         await updateDoc(doc(db, "items", editingId), itemData);
-        showToast(`${form.name} updated`, "success");
+        showToast(`${form.name} updated ✓`, "success");
       } else {
         await addDoc(collection(db, "items"), itemData);
-        showToast(`${form.name} saved! Setting calendar reminder…`, "info");
-
-        // Create calendar reminder using user's OAuth token
-        const days = daysUntil(form.expiry);
-        if (days >= APP_SETTINGS_DAYS) {
-          try {
-            const credential = auth.currentUser;
-            // Get fresh access token
-            const token = await credential.getIdToken();
-            // Use the OAuth access token stored at sign-in
-            const oauthToken = sessionStorage.getItem("gCalToken");
-            if (oauthToken) {
-              await createCalendarReminder(itemData, oauthToken);
-              showToast(`📅 Calendar reminder set for ${form.name}!`, "success");
-            }
-          } catch (calErr) {
-            console.warn("Calendar reminder failed:", calErr);
-            showToast(`${form.name} saved. Calendar reminder failed — you may need to re-sign in.`, "error");
-          }
-        }
+        showToast(`${form.name} added ✓`, "success");
       }
-
       setForm(emptyForm);
       setShowForm(false);
       setEditingId(null);
     } catch (e) {
-      console.error(e);
       showToast("Something went wrong. Please try again.", "error");
     }
-
     setLoading(false);
   };
 
@@ -176,7 +185,6 @@ export default function App() {
   const expiringSoon = items.filter(i => { const d = daysUntil(i.expiry); return d >= 0 && d <= 2; }).length;
   const expired = items.filter(i => daysUntil(i.expiry) < 0).length;
 
-  // Loading screen
   if (authLoading) {
     return (
       <div style={S.loadScreen}>
@@ -186,16 +194,15 @@ export default function App() {
     );
   }
 
-  // Sign-in screen
   if (!user) {
     return (
       <div style={S.loginScreen}>
         <div style={S.loginCard}>
           <div style={S.loginIcon}>🥦</div>
           <h1 style={S.loginTitle}>Food Waste Tracker</h1>
-          <p style={S.loginSub}>Log your shopping, get reminders before things expire, cut food waste.</p>
+          <p style={S.loginSub}>Log your shopping, get daily reminders before things expire, cut food waste.</p>
           <button style={S.googleBtn} onClick={handleSignIn}>
-            <svg width="18" height="18" viewBox="0 0 18 18" style={{ marginRight: 10, flexShrink: 0 }}>
+            <svg width="18" height="18" viewBox="0 0 18 18" style={{ marginRight:10, flexShrink:0 }}>
               <path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18z"/>
               <path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 0 1-7.18-2.54H1.83v2.07A8 8 0 0 0 8.98 17z"/>
               <path fill="#FBBC05" d="M4.5 10.52a4.8 4.8 0 0 1 0-3.04V5.41H1.83a8 8 0 0 0 0 7.18z"/>
@@ -203,7 +210,7 @@ export default function App() {
             </svg>
             Sign in with Google
           </button>
-          <p style={S.loginNote}>Both Ryan and Robyn sign in with their own Google accounts. The shopping list is shared between you.</p>
+          <p style={S.loginNote}>Both Ryan and Robyn sign in with their own Google accounts. The shopping list is shared between you in real time.</p>
         </div>
       </div>
     );
@@ -212,7 +219,7 @@ export default function App() {
   return (
     <div style={S.root}>
       {toast && (
-        <div style={{ ...S.toast, ...(toast.type === "error" ? S.toastErr : toast.type === "info" ? S.toastInfo : {}) }}>
+        <div style={{ ...S.toast, ...(toast.type==="error" ? S.toastErr : toast.type==="info" ? S.toastInfo : {}) }}>
           {toast.msg}
         </div>
       )}
@@ -221,7 +228,7 @@ export default function App() {
         <div style={S.headerInner}>
           <div>
             <div style={S.logo}>🥦 Food Waste Tracker</div>
-            <div style={S.logoSub}>Signed in as {user.displayName?.split(" ")[0] || user.email}</div>
+            <div style={S.logoSub}>Hi {user.displayName?.split(" ")[0] || "there"} 👋</div>
           </div>
           <div style={{ display:"flex", gap:8, alignItems:"center" }}>
             <button style={S.addBtn} onClick={() => { setShowForm(!showForm); setEditingId(null); setForm(emptyForm); }}>
@@ -238,6 +245,27 @@ export default function App() {
       </header>
 
       <main style={S.main}>
+
+        {/* Notification permission banner */}
+        {notifStatus !== "granted" && (
+          <div style={S.notifBanner}>
+            <div>
+              <div style={S.notifTitle}>🔔 Enable daily reminders</div>
+              <div style={S.notifSub}>Get a notification each morning when something is about to expire.</div>
+            </div>
+            <button style={S.notifBtn} onClick={handleEnableNotifications}>
+              {notifStatus === "denied" ? "Blocked in settings" : "Enable"}
+            </button>
+          </div>
+        )}
+
+        {notifStatus === "granted" && (
+          <div style={S.notifOn}>
+            🔔 Daily reminders are on — you'll be notified each morning about items expiring within 2 days.
+          </div>
+        )}
+
+        {/* Add / Edit form */}
         {showForm && (
           <div style={S.formCard}>
             <h2 style={S.formTitle}>{editingId ? "✏️ Edit Item" : "📦 Log New Item"}</h2>
@@ -270,7 +298,7 @@ export default function App() {
               </div>
             </div>
             <div style={S.formFooter}>
-              <span style={S.calNote}>📅 2-day reminder will be added to both Google Calendars</span>
+              <span style={S.calNote}>🔔 You'll be reminded 2 days before this expires</span>
               <button style={{ ...S.addBtn, background:"#388e3c", padding:"10px 20px", opacity: loading ? 0.7 : 1 }}
                 onClick={handleSubmit} disabled={loading}>
                 {loading ? "Saving…" : editingId ? "Save Changes" : "Add to tracker"}
@@ -279,11 +307,12 @@ export default function App() {
           </div>
         )}
 
+        {/* Filters */}
         {items.length > 0 && (
           <div style={S.controls}>
             <div style={S.filters}>
               {[["all","All"],["urgent","⚠️ Soon"],["expired","❌ Expired"],["ok","✅ Fine"]].map(([v,l]) => (
-                <button key={v} style={{ ...S.filterBtn, ...(filter === v ? S.filterActive : {}) }} onClick={() => setFilter(v)}>{l}</button>
+                <button key={v} style={{ ...S.filterBtn, ...(filter===v ? S.filterActive : {}) }} onClick={() => setFilter(v)}>{l}</button>
               ))}
             </div>
             <select style={S.sortSelect} value={sortBy} onChange={e => setSortBy(e.target.value)}>
@@ -317,7 +346,7 @@ export default function App() {
                       <div style={S.cardMeta}>
                         {item.category.split(" ").slice(1).join(" ")}
                         {item.quantity ? ` · ${item.quantity}` : ""}
-                        {item.addedBy ? ` · added by ${item.addedBy.split(" ")[0]}` : ""}
+                        {item.addedBy ? ` · ${item.addedBy.split(" ")[0]}` : ""}
                       </div>
                       {item.notes && <div style={S.cardNotes}>{item.notes}</div>}
                     </div>
@@ -349,8 +378,6 @@ export default function App() {
   );
 }
 
-const APP_SETTINGS_DAYS = 1; // Only set reminder if expiry is at least 1 day away
-
 const S = {
   root: { minHeight:"100vh", background:"#0f1a12", color:"#e8f5e9", fontFamily:"'DM Sans',sans-serif" },
   loadScreen: { minHeight:"100vh", background:"#0f1a12", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16 },
@@ -376,6 +403,11 @@ const S = {
   statNum: { display:"block", fontSize:20, fontWeight:700, color:"#7bc67e" },
   statLabel: { fontSize:10, color:"#5a7a5d", textTransform:"uppercase", letterSpacing:1 },
   main: { padding:16 },
+  notifBanner: { background:"#1a2e1d", border:"1px solid #2a4a2d", borderRadius:12, padding:"14px 16px", marginBottom:14, display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" },
+  notifTitle: { fontWeight:700, fontSize:14, color:"#a5d6a7", marginBottom:3 },
+  notifSub: { fontSize:12, color:"#5a7a5d", lineHeight:1.4 },
+  notifBtn: { background:"#4caf50", color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", fontSize:13, fontWeight:600, cursor:"pointer", flexShrink:0 },
+  notifOn: { background:"rgba(76,175,80,0.08)", border:"1px solid rgba(76,175,80,0.2)", borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:12, color:"#81c784" },
   formCard: { background:"#1a2e1d", border:"1px solid #2a3d2d", borderRadius:16, padding:20, marginBottom:16 },
   formTitle: { margin:"0 0 12px", fontSize:16, fontWeight:700, color:"#a5d6a7" },
   formGrid: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 },
@@ -418,6 +450,7 @@ const S = {
   btnRemove: { background:"transparent", border:"none", color:"#5a7a5d", padding:"6px 8px", fontSize:14, cursor:"pointer", marginLeft:"auto" },
   confirmRow: { display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" },
   confirmText: { fontSize:13, color:"#ef9a9a", flex:1 },
+  btnDagger: { background:"rgba(244,67,54,0.2)", border:"1px solid rgba(244,67,54,0.4)", borderRadius:8, color:"#ef9a9a", padding:"6px 12px", fontSize:12, cursor:"pointer" },
   btnDanger: { background:"rgba(244,67,54,0.2)", border:"1px solid rgba(244,67,54,0.4)", borderRadius:8, color:"#ef9a9a", padding:"6px 12px", fontSize:12, cursor:"pointer" },
   btnGhost: { background:"transparent", border:"1px solid #2a3d2d", borderRadius:8, color:"#5a7a5d", padding:"6px 12px", fontSize:12, cursor:"pointer" },
   toast: { position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)", background:"#2e7d32", color:"#fff", borderRadius:10, padding:"12px 20px", fontSize:14, fontWeight:600, zIndex:999, boxShadow:"0 4px 20px rgba(0,0,0,0.4)", maxWidth:"90vw", textAlign:"center" },
