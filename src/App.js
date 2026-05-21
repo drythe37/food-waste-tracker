@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { auth, googleProvider, db } from "./firebase";
-import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import {
   collection, addDoc, deleteDoc, updateDoc,
   doc, onSnapshot, query, orderBy, serverTimestamp
@@ -42,16 +42,12 @@ function getCategoryEmoji(categoryLabel) {
   return cat ? cat.emoji : "🫙";
 }
 
-function isMobile() {
-  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-}
-
 export default function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [items, setItems] = useState([]);
   const [form, setForm] = useState(emptyForm);
-  const [view, setView] = useState("inventory"); // inventory | add | detail | stats
+  const [view, setView] = useState("inventory");
   const [selectedItem, setSelectedItem] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [filter, setFilter] = useState("All");
@@ -69,7 +65,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    getRedirectResult(auth).catch(() => {});
     const unsub = onAuthStateChanged(auth, u => { setUser(u); setAuthLoading(false); });
     return unsub;
   }, []);
@@ -92,9 +87,14 @@ export default function App() {
 
   const handleSignIn = async () => {
     try {
-      if (isMobile()) await signInWithRedirect(auth, googleProvider);
-      else await signInWithPopup(auth, googleProvider);
-    } catch { showToast("Sign-in failed", "error"); }
+      await signInWithPopup(auth, googleProvider);
+    } catch (e) {
+      if (e.code === "auth/popup-blocked") {
+        showToast("Popup blocked — please allow popups for this site", "error");
+      } else {
+        showToast("Sign-in failed. Please try again.", "error");
+      }
+    }
   };
 
   const handleSignOut = async () => { await signOut(auth); setItems([]); };
@@ -237,14 +237,12 @@ export default function App() {
             <span style={{color: urg.text, fontWeight:700, fontSize:14}}>{urg.label}</span>
           </div>
           <div style={S.detailExpiry}>Expires {days === 0 ? "today" : days < 0 ? `${Math.abs(days)} days ago` : `in ${days} days`} · {selectedItem.expiry}</div>
-
           <div style={S.detailCard}>
             <div style={S.detailRow}><span style={S.detailLabel}>Category</span><span style={S.detailVal}>{getCategoryEmoji(selectedItem.category)} {selectedItem.category}</span></div>
             {selectedItem.quantity && <div style={S.detailRow}><span style={S.detailLabel}>Quantity</span><span style={S.detailVal}>{selectedItem.quantity}</span></div>}
             <div style={S.detailRow}><span style={S.detailLabel}>Expiry date</span><span style={S.detailVal}>{selectedItem.expiry}</span></div>
             {selectedItem.notes && <div style={{...S.detailRow, flexDirection:"column", gap:4}}><span style={S.detailLabel}>Notes</span><span style={{...S.detailVal, color:"#9ca3af"}}>{selectedItem.notes}</span></div>}
           </div>
-
           {!confirmDelete ? (<>
             <button style={S.usedBtn} onClick={() => handleMarkUsed(selectedItem)}>✓ Used it ✓<br/><span style={{fontSize:11,fontWeight:400,opacity:0.8}}>Remove from inventory</span></button>
             <button style={S.editBtn} onClick={() => openEdit(selectedItem)}>✏️ Edit item</button>
@@ -277,7 +275,6 @@ export default function App() {
         <label style={S.label}>Item name</label>
         <input style={S.input} placeholder="e.g. Greek Yogurt" value={form.name}
           onChange={e => setForm(f=>({...f,name:e.target.value}))} />
-
         <label style={S.label}>Category</label>
         <div style={S.categoryGrid}>
           {CATEGORIES.map(c => (
@@ -288,19 +285,15 @@ export default function App() {
             </button>
           ))}
         </div>
-
         <label style={S.label}>Use by / Best before</label>
         <input style={S.input} type="date" value={form.expiry}
           onChange={e => setForm(f=>({...f,expiry:e.target.value}))} />
-
         <label style={S.label}>Quantity</label>
         <input style={S.input} placeholder="e.g. 500g, 1 Litre, 6 eggs" value={form.quantity}
           onChange={e => setForm(f=>({...f,quantity:e.target.value}))} />
-
         <label style={S.label}>Notes <span style={{color:"#6b7280",fontWeight:400}}>(optional)</span></label>
         <textarea style={S.textarea} placeholder="Any notes (brand, type, storage, etc.)" value={form.notes}
           onChange={e => setForm(f=>({...f,notes:e.target.value}))} rows={3} />
-
         <button style={{...S.saveBtn,opacity:loading?0.7:1}} onClick={handleSubmit} disabled={loading}>
           {loading ? "Saving…" : editingId ? "Save Changes" : "Save Item"}
         </button>
@@ -322,7 +315,6 @@ export default function App() {
         <div style={{...S.statCard,background:"#2d1a0e"}}><div style={{...S.statBig,color:"#f97316"}}>{useSoon}</div><div style={S.statLbl}>Use soon (within 2 days)</div></div>
         <div style={{...S.statCard,background:"#2d1515"}}><div style={{...S.statBig,color:"#ef4444"}}>{expired}</div><div style={S.statLbl}>Expired items</div></div>
         <div style={{...S.statCard,background:"#0f2318"}}><div style={{...S.statBig,color:"#4ade80"}}>{totalItems - useSoon - expired}</div><div style={S.statLbl}>Items in good shape</div></div>
-
         {notifStatus !== "granted" && (
           <div style={S.notifBanner}>
             <div style={{fontWeight:700,fontSize:14,color:"#f0fdf4",marginBottom:4}}>🔔 Enable daily reminders</div>
@@ -345,12 +337,10 @@ export default function App() {
     </div>
   );
 
-  // INVENTORY VIEW (main)
+  // INVENTORY VIEW
   return (
     <div style={S.root}>
       {toast && <div style={{...S.toast,...(toast.type==="error"?S.toastErr:toast.type==="info"?S.toastInfo:{})}}>{toast.msg}</div>}
-
-      {/* Header */}
       <header style={S.header}>
         <div style={S.headerTop}>
           <div style={S.headerLeft}>
@@ -362,24 +352,11 @@ export default function App() {
             <div style={S.avatarCircle}>{(user.displayName?.[0] || "U").toUpperCase()}</div>
           </div>
         </div>
-
-        {/* Stats row */}
         <div style={S.statsRow}>
-          <div style={S.statPill}>
-            <div style={S.statPillNum}>{totalItems}</div>
-            <div style={S.statPillLabel}>Total items 🛒</div>
-          </div>
-          <div style={{...S.statPill,...S.statPillWarn}}>
-            <div style={{...S.statPillNum,color:"#f97316"}}>{useSoon}</div>
-            <div style={S.statPillLabel}>Use soon ⏰</div>
-          </div>
-          <div style={{...S.statPill,...S.statPillDanger}}>
-            <div style={{...S.statPillNum,color:"#ef4444"}}>{expired}</div>
-            <div style={S.statPillLabel}>Expired ⚠️</div>
-          </div>
+          <div style={S.statPill}><div style={S.statPillNum}>{totalItems}</div><div style={S.statPillLabel}>Total items 🛒</div></div>
+          <div style={{...S.statPill,...S.statPillWarn}}><div style={{...S.statPillNum,color:"#f97316"}}>{useSoon}</div><div style={S.statPillLabel}>Use soon ⏰</div></div>
+          <div style={{...S.statPill,...S.statPillDanger}}><div style={{...S.statPillNum,color:"#ef4444"}}>{expired}</div><div style={S.statPillLabel}>Expired ⚠️</div></div>
         </div>
-
-        {/* Filter tabs */}
         <div style={S.filterTabs}>
           {["All","Use Soon","Expired","Fine"].map(f => (
             <button key={f} style={{...S.filterTab,...(filter===f?S.filterTabActive:{})}} onClick={() => setFilter(f)}>
@@ -390,8 +367,6 @@ export default function App() {
           ))}
         </div>
       </header>
-
-      {/* List */}
       <main style={S.main}>
         {filtered.length === 0 ? (
           <div style={S.empty}>
@@ -433,11 +408,7 @@ export default function App() {
         )}
         <div style={{height:90}} />
       </main>
-
-      {/* FAB */}
       <button style={S.fab} onClick={openAdd}>+</button>
-
-      {/* Bottom nav */}
       <nav style={S.nav}>
         <button style={{...S.navBtn,...S.navBtnActive}}><span style={S.navIcon}>🏠</span><span>Inventory</span></button>
         <button style={S.navBtn} onClick={() => setView("stats")}><span style={S.navIcon}>📊</span><span>Stats</span></button>
