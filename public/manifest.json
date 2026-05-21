@@ -1,0 +1,14 @@
+{
+  "short_name": "Food Tracker",
+  "name": "Food Waste Tracker",
+  "description": "Track your food, reduce waste, get reminders before things expire.",
+  "icons": [
+    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1a12",
+  "theme_color": "#0f1a12",
+  "orientation": "portrait"
+}
